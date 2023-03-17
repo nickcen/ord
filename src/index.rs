@@ -141,7 +141,8 @@ impl Index {
       cookie_file.display()
     );
 
-    let auth = Auth::CookieFile(cookie_file);
+    // let auth = Auth::CookieFile(cookie_file);
+    let auth = Auth::UserPass("astrox".to_string(), "astesrGsafqet".to_string());
 
     let client = Client::new(&rpc_url, auth.clone()).context("failed to connect to RPC URL")?;
 
@@ -156,6 +157,11 @@ impl Index {
     } else {
       data_dir.join("index.redb")
     };
+
+    log::info!(
+      "index.redb path is `{}`",
+      path.to_str().unwrap()
+    );
 
     let database = match unsafe { Database::builder().open_mmapped(&path) } {
       Ok(database) => {
@@ -371,6 +377,14 @@ impl Index {
 
   pub(crate) fn update(&self) -> Result {
     Updater::update(self)
+  }
+
+  pub(crate) fn outputs(&self) -> Result {
+    let rtx = self.begin_read()?;
+
+    rtx.export()?;
+
+    Ok(())
   }
 
   pub(crate) fn is_reorged(&self) -> bool {

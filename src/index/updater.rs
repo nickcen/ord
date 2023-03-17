@@ -43,6 +43,7 @@ impl Updater {
   pub(crate) fn update(index: &Index) -> Result {
     let wtx = index.begin_write()?;
 
+    // TODO：指定从哪个height开始同步。
     let height = wtx
       .open_table(HEIGHT_TO_BLOCK_HASH)?
       .range(0..)?
@@ -336,6 +337,10 @@ impl Updater {
     block: BlockData,
     value_cache: &mut HashMap<OutPoint, u64>,
   ) -> Result<()> {
+    // TODO: 给block里面的sat打编号
+    println!("index_block {:?}", block.header.block_hash());
+
+
     // If value_receiver still has values something went wrong with the last block
     // Could be an assert, shouldn't recover from this and commit the last block
     let Err(TryRecvError::Empty) = value_receiver.try_recv() else {
@@ -346,7 +351,10 @@ impl Updater {
 
     let index_inscriptions = self.height >= index.first_inscription_height;
 
+    println!("self.height {}, first_inscription_height {}, index_inscriptions {}", self.height, index.first_inscription_height, index_inscriptions);
+
     if index_inscriptions {
+
       // Send all missing input outpoints to be fetched right away
       let txids = block
         .txdata

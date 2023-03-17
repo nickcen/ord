@@ -156,6 +156,7 @@ impl Inscribe {
     reveal_fee_rate: FeeRate,
     no_limit: bool,
   ) -> Result<(Transaction, Transaction, TweakedKeyPair)> {
+    // 用传进来的satpoint，或者从utxos里面找第一个没有被inscribed的satpoint
     let satpoint = if let Some(satpoint) = satpoint {
       satpoint
     } else {
@@ -174,6 +175,7 @@ impl Inscribe {
         .ok_or_else(|| anyhow!("wallet contains no cardinal utxos"))?
     };
 
+    // 避免重复inscribe
     for (inscribed_satpoint, inscription_id) in &inscriptions {
       if inscribed_satpoint == &satpoint {
         return Err(anyhow!("sat at {} already inscribed", satpoint));
