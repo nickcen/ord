@@ -76,6 +76,7 @@ pub use crate::{
   fee_rate::FeeRate, object::Object, rarity::Rarity, sat::Sat, sat_point::SatPoint,
   subcommand::wallet::transaction_builder::TransactionBuilder,
 };
+use crate::Subcommand::Db;
 
 #[cfg(test)]
 #[macro_use]
@@ -163,18 +164,57 @@ pub fn main() {
   })
   .expect("Error setting ctrl-c handler");
 
-  if let Err(err) = Arguments::parse().run() {
-    eprintln!("error: {err}");
-    err
-      .chain()
-      .skip(1)
-      .for_each(|cause| eprintln!("because: {cause}"));
-    if env::var_os("RUST_BACKTRACE")
-      .map(|val| val == "1")
-      .unwrap_or_default()
-    {
-      eprintln!("{}", err.backtrace());
-    }
-    process::exit(1);
-  }
+  let options = Options{
+    bitcoin_data_dir: None,
+    chain_argument: Default::default(),
+    config: None,
+    config_dir: None,
+    cookie_file: None,
+    data_dir: None,
+    first_inscription_height: None,
+    height_limit: Some(4),
+    index: None,
+    index_sats: true,
+    regtest: false,
+    rpc_url: Some("192.168.2.191:8332".to_string()),
+    signet: false,
+    testnet: false,
+    wallet: "".to_string()
+  };
+  // run outputs
+  // subcommand::db::Db::Outputs.run(options).unwrap();
+
+  // run index
+  // subcommand::db::Db::Index.run(options).unwrap();
+
+  let index = Arc::new(Index::open(&options).unwrap());
+  let handle = axum_server::Handle::new();
+  LISTENERS.lock().unwrap().push(handle.clone());
+  let server = subcommand::server::Server{
+    address: "0.0.0.0".to_string(),
+    acme_domain: vec![],
+    http_port: None,
+    https_port: None,
+    acme_cache: None,
+    acme_contact: vec![],
+    http: false,
+    https: false,
+    redirect_http_to_https: false
+  };
+  server.run(options, index, handle).unwrap();
+
+  // if let Err(err) = Arguments::parse().run() {
+  //   eprintln!("error: {err}");
+  //   err
+  //     .chain()
+  //     .skip(1)
+  //     .for_each(|cause| eprintln!("because: {cause}"));
+  //   if env::var_os("RUST_BACKTRACE")
+  //     .map(|val| val == "1")
+  //     .unwrap_or_default()
+  //   {
+  //     eprintln!("{}", err.backtrace());
+  //   }
+  //   process::exit(1);
+  // }
 }
