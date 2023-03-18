@@ -164,6 +164,25 @@ pub fn main() {
   })
   .expect("Error setting ctrl-c handler");
 
+  if let Err(err) = Arguments::parse().run() {
+    eprintln!("error: {err}");
+    err
+      .chain()
+      .skip(1)
+      .for_each(|cause| eprintln!("because: {cause}"));
+    if env::var_os("RUST_BACKTRACE")
+      .map(|val| val == "1")
+      .unwrap_or_default()
+    {
+      eprintln!("{}", err.backtrace());
+    }
+    process::exit(1);
+  }
+}
+
+pub fn debug() {
+  env_logger::init();
+
   let options = Options{
     bitcoin_data_dir: None,
     chain_argument: Default::default(),
@@ -172,7 +191,7 @@ pub fn main() {
     cookie_file: None,
     data_dir: None,
     first_inscription_height: None,
-    height_limit: Some(4),
+    height_limit: Some(6),
     index: None,
     index_sats: true,
     regtest: false,
@@ -185,36 +204,22 @@ pub fn main() {
   // subcommand::db::Db::Outputs.run(options).unwrap();
 
   // run index
-  // subcommand::db::Db::Index.run(options).unwrap();
+  subcommand::db::Db::Index.run(options).unwrap();
 
-  let index = Arc::new(Index::open(&options).unwrap());
-  let handle = axum_server::Handle::new();
-  LISTENERS.lock().unwrap().push(handle.clone());
-  let server = subcommand::server::Server{
-    address: "0.0.0.0".to_string(),
-    acme_domain: vec![],
-    http_port: None,
-    https_port: None,
-    acme_cache: None,
-    acme_contact: vec![],
-    http: false,
-    https: false,
-    redirect_http_to_https: false
-  };
-  server.run(options, index, handle).unwrap();
-
-  // if let Err(err) = Arguments::parse().run() {
-  //   eprintln!("error: {err}");
-  //   err
-  //     .chain()
-  //     .skip(1)
-  //     .for_each(|cause| eprintln!("because: {cause}"));
-  //   if env::var_os("RUST_BACKTRACE")
-  //     .map(|val| val == "1")
-  //     .unwrap_or_default()
-  //   {
-  //     eprintln!("{}", err.backtrace());
-  //   }
-  //   process::exit(1);
-  // }
+  // start server
+  // let index = Arc::new(Index::open(&options).unwrap());
+  // let handle = axum_server::Handle::new();
+  // LISTENERS.lock().unwrap().push(handle.clone());
+  // let server = subcommand::server::Server{
+  //   address: "0.0.0.0".to_string(),
+  //   acme_domain: vec![],
+  //   http_port: None,
+  //   https_port: None,
+  //   acme_cache: None,
+  //   acme_contact: vec![],
+  //   http: false,
+  //   https: false,
+  //   redirect_http_to_https: false
+  // };
+  // server.run(options, index, handle).unwrap();
 }
