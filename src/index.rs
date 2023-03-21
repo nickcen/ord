@@ -1,6 +1,3 @@
-use std::fmt::format;
-use mysql::{params, Pool, PooledConn};
-use mysql::prelude::Queryable;
 use {
   self::{
     entry::{
@@ -19,8 +16,7 @@ use {
   log::log_enabled,
   redb::{Database, ReadableTable, Table, TableDefinition, WriteStrategy, WriteTransaction},
   std::collections::HashMap,
-  std::sync::atomic::{self, AtomicBool},
-  once_cell::sync::OnceCell
+  std::sync::atomic::{self, AtomicBool}
 };
 
 mod entry;
@@ -59,7 +55,8 @@ pub(crate) struct Index {
   genesis_block_coinbase_txid: Txid,
   height_limit: Option<u64>,
   reorged: AtomicBool,
-  rpc_url: String
+  rpc_url: String,
+  pub db: DB
 }
 
 #[derive(Debug, PartialEq)]
@@ -137,8 +134,6 @@ impl<T> BitcoinCoreRpcResultExt<T> for Result<T, bitcoincore_rpc::Error> {
   }
 }
 
-static DB_POOL: OnceCell<Pool> = OnceCell::new();
-
 impl Index {
   pub(crate) fn open(options: &Options) -> Result<Self> {
     let rpc_url = options.rpc_url();
@@ -170,6 +165,9 @@ impl Index {
       "index.redb path is `{}`",
       path.to_str().unwrap()
     );
+
+    // mysql db instance
+    let db = DB::new(options.mysql_url.clone());
 
     let database = match unsafe { Database::builder().open_mmapped(&path) } {
       Ok(database) => {
@@ -231,8 +229,9 @@ impl Index {
 
         if options.index_sats {
           // TODO: 这里是初始化要插入一笔给到 lost
-          tx.open_table(OUTPOINT_TO_SAT_RANGES)?
-            .insert(&OutPoint::null().store(), [].as_slice())?;
+          db.insert_outpoint_to_sat_ranges(&OutPoint::null().store(), &vec![]);
+          // tx.open_table(OUTPOINT_TO_SAT_RANGES)?
+          //   .insert(&OutPoint::null().store(), [].as_slice())?;
         }
 
         tx.commit()?;
@@ -241,10 +240,6 @@ impl Index {
       }
       Err(error) => return Err(error.into()),
     };
-
-    /// create mysql connection pool
-
-    DB_POOL.set(Pool::new(options.mysql_url.clone().as_str()).expect(&format!("Error Connection to {}", options.mysql_url))).unwrap_or_else(|_| { log::info!("try insert pool cell failure!") });
 
     let genesis_block_coinbase_transaction =
       options.chain().genesis_block().coinbase().unwrap().clone();
@@ -259,7 +254,8 @@ impl Index {
       genesis_block_coinbase_transaction,
       height_limit: options.height_limit,
       reorged: AtomicBool::new(false),
-      rpc_url
+      rpc_url,
+      db
     })
   }
 
@@ -428,72 +424,6 @@ impl Index {
       + n;
     statistic_to_count.insert(&statistic.key(), &value)?;
     Ok(())
-  }
-
-  /// 开启 mysql 模式
-  pub fn get_connection(&self) -> PooledConn {
-    DB_POOL.get().expect("Error get pool from OneCell<Pool>").get_conn().expect("Error get_connect from db pool")
-  }
-
-  fn get_mblock_height(&self) -> u64 {
-    let mut conn = self.get_connection();
-    let query_result = conn.query_first("select hash, height from blocks order by height desc").map(|row| {
-      row.map(|(hash, height)| MBlock{
-        hash,
-        height
-      })
-    }).unwrap();
-
-    if let Some(block) = query_result {
-      block.height + 1
-    } else {
-      0
-    }
-  }
-
-  fn get_mblock_by_height(&self, height: u64) -> Option<MBlock>{
-    let mut conn = self.get_connection();
-    conn.exec_first("select hash, height from blocks where height = :height order by height desc", params! {"height" => height}).map(|row| {
-      row.map(|(hash, height)| MBlock{
-        hash,
-        height
-      })
-    }).unwrap()
-  }
-
-  fn insert_mblock(&self, height: &u64, hash: String) {
-    let mut conn = self.get_connection();
-    conn.exec_drop("insert ignore into blocks (hash, height) values (:hash, :height)", params! {"height" => height, "hash" => hash}).unwrap();
-  }
-
-  fn outpoint_to_sat_ranges(&self, outpointvalue: &OutPointValue, sats: &Vec<u8>) {
-    log::trace!("outpoint_to_sat_ranges");
-
-    let mut conn = self.get_connection();
-    let outpoint: OutPoint = Entry::load(*outpointvalue);
-    let txid = outpoint.txid.to_string();
-
-    conn.exec_drop("delete from outpoints where txid = :txid", params! {"txid" => txid.clone()}).unwrap();
-
-    conn.exec_drop("insert ignore into outpoints (txid, vout) values (:txid, :vout)", params! {"txid" => txid.clone(), "vout" => outpoint.vout}).unwrap();
-
-    let stmt = conn.prep("insert ignore into sat_ranges (r0, r1, txid) VALUES (:r0, :r1, :txid)")
-      .unwrap();
-
-    for chunk in sats.clone().chunks_exact(11) {
-      let range = SatRange::load(chunk.try_into().unwrap());
-      conn.exec_drop(&stmt, params! {
-         "r0" => range.0,
-         "r1" => range.1,
-         "txid" => txid.clone()
-     }).unwrap()
-    }
-  }
-
-  fn outpoint_to_value(&self, outpoint: &OutPoint, value: &u64) {
-    let mut conn = self.get_connection();
-    let txid = outpoint.txid.to_string();
-    conn.exec_drop("insert ignore into outpoints (txid, value) values (:txid, :value) on duplicate key update value = :value ", params! {"txid" => txid.clone(), "value" => value}).unwrap();
   }
 
   #[cfg(test)]

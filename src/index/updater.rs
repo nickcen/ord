@@ -53,7 +53,7 @@ impl Updater {
     //   .map(|(height, _hash)| height.value() + 1)
     //   .unwrap_or(0);
 
-    let height = index.get_mblock_height();
+    let height = index.db.get_current_height();
     log::trace!("height is {height}");
 
     wtx
@@ -138,7 +138,7 @@ impl Updater {
 
       uncommitted += 1;
 
-      if uncommitted == 5000 {
+      if uncommitted == 2000 {
         self.commit(index, wtx, value_cache)?;
         value_cache = HashMap::new();
         uncommitted = 0;
@@ -151,7 +151,7 @@ impl Updater {
         //   .next()
         //   .map(|(height, _hash)| height.value() + 1)
         //   .unwrap_or(0);
-        let height = index.get_mblock_height();
+        let height = index.db.get_current_height();
 
         if height != self.height {
           // another update has run between committing and beginning the new
@@ -420,15 +420,13 @@ impl Updater {
       //   return Err(anyhow!("reorg detected at or before {prev_height}"));
       // }
 
-      // TODO 要等保存的功能做完回来写
-      if let Some(prev_block) = index.get_mblock_by_height(prev_height){
-        log::trace!("--------------------------");
+      if let Some(prev_block) = index.db.get_mblock_by_height(prev_height){
         if prev_block.hash != block.header.prev_blockhash.to_string() {
           index.reorged.store(true, atomic::Ordering::Relaxed);
           return Err(anyhow!("reorg detected at or before {prev_height}"));
         }
       } else {
-        log::trace!("===========================");
+        return Err(anyhow!("reorg detected at or before {prev_height}"));
       }
     }
 
@@ -470,10 +468,7 @@ impl Updater {
       let h = Height(self.height);
       if h.subsidy() > 0 {
         let start = h.starting_sat();
-        log::trace!("subsidy range {} - {}", start.n(), (start + h.subsidy()).n());
-
         /// 这个区块的奖励放到开始的位置
-
         coinbase_inputs.push_front((start.n(), (start + h.subsidy()).n()));
         self.sat_ranges_since_flush += 1;
       }
@@ -486,7 +481,6 @@ impl Updater {
         let mut input_sat_ranges = VecDeque::new();
 
         for input in &tx.input {
-          log::trace!("previous_output {}", input.previous_output);
           let key = input.previous_output.store();
 
           ///
@@ -501,23 +495,20 @@ impl Updater {
             }
             None => {
               log::trace!("not match range_cache");
-              outpoint_to_sat_ranges
-              .remove(&key)?
-              .ok_or_else(|| anyhow!("Could not find outpoint {} in index", input.previous_output))?
-              .value()
-              .to_vec()
+              index.db.get_outpoint_to_sat_ranges(&key).to_vec()
+
+              // outpoint_to_sat_ranges
+              // .remove(&key)?
+              // .ok_or_else(|| anyhow!("Could not find outpoint {} in index", input.previous_output))?
+              // .value()
+              // .to_vec()
             },
           };
-
-          log::trace!("sta_ranges is {:?}", sat_ranges.clone());
 
           /// 这里就是一个反序列化，拿回 sat_range 区间
           for chunk in sat_ranges.chunks_exact(11) {
             input_sat_ranges.push_back(SatRange::load(chunk.try_into().unwrap()));
           }
-
-          log::trace!("input_sat_ranges is {:?}", input_sat_ranges.clone());
-          // input_sat_ranges is [(316017300000000, 316020000000000), (306420000000000, 306425000000000), (316565000000000, 316569700000000)]
         }
 
         self.index_transaction_sats(
@@ -529,6 +520,7 @@ impl Updater {
           &mut outputs_in_block,
           &mut inscription_updater,
           index_inscriptions,
+          index,
         )?;
 
         /// 把剩余的 input_sat_ranges 存起来？为什么会有这种情况，inputs 比 outputs大，差值是 gas
@@ -552,26 +544,33 @@ impl Updater {
           &mut outputs_in_block,
           &mut inscription_updater,
           index_inscriptions,
+          index,
         )?;
       }
 
       /// 如果 coinbase_inputs 还有剩余，也就是奖励没有全部转给矿工，就记录到 lost 里面，意思应该就是丢弃了
       if !coinbase_inputs.is_empty() {
-        let mut lost_sat_ranges = outpoint_to_sat_ranges
-          .remove(&OutPoint::null().store())?
-          .map(|ranges| ranges.value().to_vec())
-          .unwrap_or_default();
+        // let mut lost_sat_ranges = outpoint_to_sat_ranges
+        //   .remove(&OutPoint::null().store())?
+        //   .map(|ranges| ranges.value().to_vec())
+        //   .unwrap_or_default();
+        let mut lost_sat_ranges = index.db.get_outpoint_to_sat_ranges(&OutPoint::null().store());
 
         for (start, end) in coinbase_inputs {
           if !Sat(start).is_common() {
-            sat_to_satpoint.insert(
-              &start,
-              &SatPoint {
-                outpoint: OutPoint::null(),
-                offset: lost_sats,
-              }
-              .store(),
-            )?;
+            // sat_to_satpoint.insert(
+            //   &start,
+            //   &SatPoint {
+            //     outpoint: OutPoint::null(),
+            //     offset: lost_sats,
+            //   }
+            //   .store(),
+            // )?;
+
+            index.db.insert_sat_to_satpoint(&start, &SatPoint {
+              outpoint: OutPoint::null(),
+              offset: lost_sats,
+            });
           }
 
           lost_sat_ranges.extend_from_slice(&(start, end).store());
@@ -579,8 +578,8 @@ impl Updater {
           lost_sats += end - start;
         }
 
-        outpoint_to_sat_ranges.insert(&OutPoint::null().store(), lost_sat_ranges.as_slice())?;
-        index.outpoint_to_sat_ranges(&OutPoint::null().store(), &lost_sat_ranges);
+        // outpoint_to_sat_ranges.insert(&OutPoint::null().store(), lost_sat_ranges.as_slice())?;
+        index.db.insert_outpoint_to_sat_ranges(&OutPoint::null().store(), &lost_sat_ranges);
       }
     } else {
       for (tx, txid) in block.txdata.iter().skip(1).chain(block.txdata.first()) {
@@ -593,7 +592,7 @@ impl Updater {
     // TODO 删除写height_to_block_hash
     // height_to_block_hash.insert(&self.height, &block.header.block_hash().store())?;
 
-    index.insert_mblock(&self.height, block.header.block_hash().to_string());
+    index.db.insert_mblock(&self.height, block.header.block_hash().to_string());
 
     self.height += 1;
     self.outputs_traversed += outputs_in_block;
@@ -616,6 +615,7 @@ impl Updater {
     outputs_traversed: &mut u64,
     inscription_updater: &mut InscriptionUpdater,
     index_inscriptions: bool,
+    index: &Index
   ) -> Result {
     if index_inscriptions {
       inscription_updater.index_transaction_inscriptions(tx, txid, Some(input_sat_ranges))?;
@@ -645,14 +645,19 @@ impl Updater {
         /// offset 就是在当前这笔 output 里面的偏移值
         ///
         if !Sat(range.0).is_common() {
-          sat_to_satpoint.insert(
-            &range.0,
-            &SatPoint {
-              outpoint,
-              offset: output.value - remaining,
-            }
-            .store(),
-          )?;
+          index.db.insert_sat_to_satpoint(&range.0, &SatPoint {
+            outpoint,
+            offset: output.value - remaining,
+          });
+
+          // sat_to_satpoint.insert(
+          //   &range.0,
+          //   &SatPoint {
+          //     outpoint,
+          //     offset: output.value - remaining,
+          //   }
+          //   .store(),
+          // )?;
         }
 
         let count = range.1 - range.0;
@@ -711,24 +716,27 @@ impl Updater {
 
       let mut outpoint_to_sat_ranges = wtx.open_table(OUTPOINT_TO_SAT_RANGES)?;
 
-      for (outpoint, sat_range) in self.range_cache.drain() {
-        outpoint_to_sat_ranges.insert(&outpoint, sat_range.as_slice())?;
+      index.db.batch_insert_outpoint_to_sat_ranges(&self.range_cache);
+      self.range_cache.clear();
 
-        index.outpoint_to_sat_ranges(&outpoint, &sat_range);
-      }
-
+      // for (outpoint, sat_range) in self.range_cache.drain() {
+      //   // outpoint_to_sat_ranges.insert(&outpoint, sat_range.as_slice())?;
+      //   index.db.insert_outpoint_to_sat_ranges(&outpoint, &sat_range);
+      // }
       self.outputs_inserted_since_flush = 0;
     }
 
     {
-      let mut outpoint_to_value = wtx.open_table(OUTPOINT_TO_VALUE)?;
+      // let mut outpoint_to_value = wtx.open_table(OUTPOINT_TO_VALUE)?;
+      //
+      // for (outpoint, value) in value_cache {
+      //   log::trace!("outpoint_to_value {}", outpoint);
+      //   outpoint_to_value.insert(&outpoint.store(), &value)?;
+      //
+      //   index.db.insert_outpoint_to_value(&outpoint, &value);
+      // }
 
-      for (outpoint, value) in value_cache {
-        log::trace!("outpoint_to_value {}", outpoint);
-        outpoint_to_value.insert(&outpoint.store(), &value)?;
-
-        index.outpoint_to_value(&outpoint, &value);
-      }
+      index.db.batch_insert_outpoint_to_value(&value_cache);
     }
 
     Index::increment_statistic(&wtx, Statistic::OutputsTraversed, self.outputs_traversed)?;

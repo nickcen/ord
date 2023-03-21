@@ -49,17 +49,17 @@ impl Rtx<'_> {
       println!("key is {:?}, value is {:?}", key.value(), value.value());
     });
 
-    println!("OUTPOINT_TO_SAT_RANGES");
-
-    self.0.open_table(OUTPOINT_TO_SAT_RANGES)?.iter()?.rev().take(10).for_each(|(key, value)| {
-      println!("OutPoint is {:?}", OutPoint::load(*key.value()));
-
-      for chunk in value.value().chunks_exact(11) {
-        let (start, end) = SatRange::load(chunk.try_into().unwrap());
-
-        println!("start {}, end {}", start, end);
-      }
-    });
+    // println!("OUTPOINT_TO_SAT_RANGES");
+    //
+    // self.0.open_table(OUTPOINT_TO_SAT_RANGES)?.iter()?.rev().take(10).for_each(|(key, value)| {
+    //   println!("OutPoint is {:?}", OutPoint::load(*key.value()));
+    //
+    //   for chunk in value.value().chunks_exact(11) {
+    //     let (start, end) = SatRange::load(chunk.try_into().unwrap());
+    //
+    //     println!("start {}, end {}", start, end);
+    //   }
+    // });
 
     println!("OUTPOINT_TO_VALUE");
     self.0.open_table(OUTPOINT_TO_VALUE)?.iter()?.rev().take(10).for_each(|(key, value)| {
