@@ -1,4 +1,6 @@
+use std::env;
+
 fn main() {
-  println!("debug start");
+  env::set_var("RUST_LOG", "trace");
   ord::debug();
 }

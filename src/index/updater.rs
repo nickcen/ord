@@ -62,6 +62,7 @@ impl Updater {
           .unwrap_or(0),
       )?;
 
+    log::trace!("create updater");
     let mut updater = Self {
       range_cache: HashMap::new(),
       height,
@@ -81,6 +82,7 @@ impl Updater {
     mut wtx: WriteTransaction<'index>,
   ) -> Result {
     let starting_height = index.client.get_block_count()? + 1;
+    log::trace!("starting_height is {}",  starting_height);
 
     let mut progress_bar = if cfg!(test)
       || log_enabled!(log::Level::Info)
@@ -338,8 +340,7 @@ impl Updater {
     value_cache: &mut HashMap<OutPoint, u64>,
   ) -> Result<()> {
     // TODO: 给block里面的sat打编号
-    println!("index_block {:?}", block.header.block_hash());
-
+    log::trace!("index_block {:?}", block.header.block_hash());
 
     // If value_receiver still has values something went wrong with the last block
     // Could be an assert, shouldn't recover from this and commit the last block
@@ -354,7 +355,6 @@ impl Updater {
     println!("self.height {}, first_inscription_height {}, index_inscriptions {}", self.height, index.first_inscription_height, index_inscriptions);
 
     if index_inscriptions {
-
       // Send all missing input outpoints to be fetched right away
       let txids = block
         .txdata
@@ -403,6 +403,7 @@ impl Updater {
       block.txdata.len()
     );
 
+    // TODO 这里是做校验，证明找到上一个区块
     if let Some(prev_height) = self.height.checked_sub(1) {
       let prev_hash = height_to_block_hash.get(&prev_height)?.unwrap();
 
@@ -421,6 +422,7 @@ impl Updater {
     let mut satpoint_to_inscription_id = wtx.open_table(SATPOINT_TO_INSCRIPTION_ID)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
 
+    // TODO 这个lost_sats不知道干啥用的
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
       .map(|lost_sats| lost_sats.value())
@@ -444,38 +446,60 @@ impl Updater {
       let mut sat_to_satpoint = wtx.open_table(SAT_TO_SATPOINT)?;
       let mut outpoint_to_sat_ranges = wtx.open_table(OUTPOINT_TO_SAT_RANGES)?;
 
+      /// 这个应该是把 inputs 里面的所有 sat_range 组成一个数组
       let mut coinbase_inputs = VecDeque::new();
 
       let h = Height(self.height);
       if h.subsidy() > 0 {
         let start = h.starting_sat();
+        log::trace!("subsidy range {} - {}", start.n(), (start + h.subsidy()).n());
+
+        /// 这个区块的奖励放到开始的位置
+
         coinbase_inputs.push_front((start.n(), (start + h.subsidy()).n()));
         self.sat_ranges_since_flush += 1;
       }
 
+      /// 跳过了第 0 个transaction，第 0 个交易应该是挖矿奖励
       for (tx_offset, (tx, txid)) in block.txdata.iter().enumerate().skip(1) {
-        log::trace!("Indexing transaction {tx_offset}…");
+        log::trace!("Indexing transaction tx_offset:{tx_offset} txid:{txid}");
 
+        /// 把所有 input 对应的 sat_range，凑一起，排个队
         let mut input_sat_ranges = VecDeque::new();
 
         for input in &tx.input {
+          log::trace!("previous_output {}", input.previous_output);
           let key = input.previous_output.store();
 
+          ///
+          /// 找到当前这笔 inputs 的来源 outputs，然后找到这个 outputs 的 sat_ranges
+          /// 这里就是选择从内存缓存取，还是数据库取
+          ///
           let sat_ranges = match self.range_cache.remove(&key) {
             Some(sat_ranges) => {
+              log::trace!("match range_cache");
               self.outputs_cached += 1;
               sat_ranges
             }
-            None => outpoint_to_sat_ranges
+            None => {
+              log::trace!("not match range_cache");
+              outpoint_to_sat_ranges
               .remove(&key)?
               .ok_or_else(|| anyhow!("Could not find outpoint {} in index", input.previous_output))?
               .value()
-              .to_vec(),
+              .to_vec()
+            },
           };
 
+          log::trace!("sta_ranges is {:?}", sat_ranges.clone());
+
+          /// 这里就是一个反序列化，拿回 sat_range 区间
           for chunk in sat_ranges.chunks_exact(11) {
             input_sat_ranges.push_back(SatRange::load(chunk.try_into().unwrap()));
           }
+
+          log::trace!("input_sat_ranges is {:?}", input_sat_ranges.clone());
+          // input_sat_ranges is [(316017300000000, 316020000000000), (306420000000000, 306425000000000), (316565000000000, 316569700000000)]
         }
 
         self.index_transaction_sats(
@@ -489,10 +513,18 @@ impl Updater {
           index_inscriptions,
         )?;
 
+        /// 把剩余的 input_sat_ranges 存起来？为什么会有这种情况，inputs 比 outputs大，差值是 gas
+        /// 可以参考这笔交易 https://www.blockchain.com/explorer/blocks/btc/749999
+        ///
+        log::trace!("remained input_sat_ranges {:?}", input_sat_ranges.clone());
         coinbase_inputs.extend(input_sat_ranges);
       }
 
       if let Some((tx, txid)) = block.txdata.get(0) {
+        log::trace!("Indexing transaction tx_offset:0 txid: {txid}");
+
+        /// 这里传入的 input_sat_ranges 是 coinbase_inputs
+        /// 相当于 挖矿奖励 加上各个交易的 gas
         self.index_transaction_sats(
           tx,
           *txid,
@@ -505,6 +537,7 @@ impl Updater {
         )?;
       }
 
+      /// 如果 coinbase_inputs 还有剩余，也就是奖励没有全部转给矿工，就记录到 lost 里面，意思应该就是丢弃了
       if !coinbase_inputs.is_empty() {
         let mut lost_sat_ranges = outpoint_to_sat_ranges
           .remove(&OutPoint::null().store())?
@@ -566,19 +599,29 @@ impl Updater {
       inscription_updater.index_transaction_inscriptions(tx, txid, Some(input_sat_ranges))?;
     }
 
+    log::trace!("all the input range is {:?}", input_sat_ranges);
+
+    /// 这里应该是把输入的 input_sat_ranges, 根据 outputs 的顺序，拆到不同的 outputs 里面
     for (vout, output) in tx.output.iter().enumerate() {
       let outpoint = OutPoint {
         vout: vout.try_into().unwrap(),
         txid,
       };
+
       let mut sats = Vec::new();
 
+      /// 这个就是根据这笔 output 需要的 value，把输入的 input_sat_ranges 从前到后进行组合，凑齐 output 需要的 value
+      /// 相当于这个 output 就会得到一些新的 sat_range
       let mut remaining = output.value;
       while remaining > 0 {
+        /// 每消耗掉一个 sat_range，就减少一些 remaining
         let range = input_sat_ranges
           .pop_front()
           .ok_or_else(|| anyhow!("insufficient inputs for transaction outputs"))?;
 
+        /// 特殊的 range 会在 sat_to_satpoint 表里面记录一笔
+        /// offset 就是在当前这笔 output 里面的偏移值
+        ///
         if !Sat(range.0).is_common() {
           sat_to_satpoint.insert(
             &range.0,
@@ -592,6 +635,7 @@ impl Updater {
 
         let count = range.1 - range.0;
 
+        /// 如果当前这个 sat_range 大于所需要的 remaning，直接把这个 sat_range 拆成两份
         let assigned = if count > remaining {
           self.sat_ranges_since_flush += 1;
           let middle = range.0 + remaining;
@@ -601,6 +645,7 @@ impl Updater {
           range
         };
 
+        log::trace!("assigned is {:?}", assigned);
         sats.extend_from_slice(&assigned.store());
 
         remaining -= assigned.1 - assigned.0;
@@ -610,6 +655,10 @@ impl Updater {
 
       *outputs_traversed += 1;
 
+      log::trace!("finish handling output. output:{outpoint}");
+      for chunk in sats.clone().chunks_exact(11) {
+        log::trace!("    {:?}", SatRange::load(chunk.try_into().unwrap()));
+      }
       self.range_cache.insert(outpoint.store(), sats);
       self.outputs_inserted_since_flush += 1;
     }

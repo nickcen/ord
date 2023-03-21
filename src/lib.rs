@@ -76,7 +76,6 @@ pub use crate::{
   fee_rate::FeeRate, object::Object, rarity::Rarity, sat::Sat, sat_point::SatPoint,
   subcommand::wallet::transaction_builder::TransactionBuilder,
 };
-use crate::Subcommand::Db;
 
 #[cfg(test)]
 #[macro_use]
@@ -191,20 +190,24 @@ pub fn debug() {
     cookie_file: None,
     data_dir: None,
     first_inscription_height: None,
-    height_limit: Some(6),
+    height_limit: Some(75000),
     index: None,
     index_sats: true,
     regtest: false,
+    // rpc_url: Some("13.231.161.20:8332".to_string()),
     rpc_url: Some("192.168.2.191:8332".to_string()),
     signet: false,
     testnet: false,
     wallet: "".to_string()
   };
-  // run outputs
-  // subcommand::db::Db::Outputs.run(options).unwrap();
 
-  // run index
-  subcommand::db::Db::Index.run(options).unwrap();
+  fs::copy("/Volumes/Personal/Library/Application Support/ord/index_74998.redb", "/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
+  // fs::remove_file("/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
+
+
+  let index = Index::open(&options).unwrap();
+  // index.outputs().unwrap(); // run outputs
+  index.update().unwrap(); // run index
 
   // start server
   // let index = Arc::new(Index::open(&options).unwrap());
