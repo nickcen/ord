@@ -1,14 +1,14 @@
 use super::*;
 
 #[derive(Debug, Parser)]
-pub(crate) enum Db {
+pub(crate) enum Indexer {
   #[clap(about = "index bit transactions")]
   Index,
   #[clap(about = "List index records")]
   Outputs,
 }
 
-impl Db {
+impl Indexer {
   pub(crate) fn run(self, options: Options) -> Result {
     let index = Index::open(&options)?;
 

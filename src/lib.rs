@@ -190,24 +190,25 @@ pub fn debug() {
     cookie_file: None,
     data_dir: None,
     first_inscription_height: None,
-    height_limit: Some(75000),
+    height_limit: Some(50),
     index: None,
     index_sats: true,
     regtest: false,
     // rpc_url: Some("13.231.161.20:8332".to_string()),
     rpc_url: Some("192.168.2.191:8332".to_string()),
+    mysql_url: "mysql://test:test@localhost:3306/bitcoin".to_string(),
     signet: false,
     testnet: false,
     wallet: "".to_string()
   };
 
-  fs::copy("/Volumes/Personal/Library/Application Support/ord/index_74998.redb", "/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
-  // fs::remove_file("/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
+  // fs::copy("/Volumes/Personal/Library/Application Support/ord/index_74998.redb", "/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
+  fs::remove_file("/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
 
 
   let index = Index::open(&options).unwrap();
-  // index.outputs().unwrap(); // run outputs
-  index.update().unwrap(); // run index
+  index.outputs().unwrap(); // run outputs
+  // index.update().unwrap(); // run index
 
   // start server
   // let index = Arc::new(Index::open(&options).unwrap());

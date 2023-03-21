@@ -44,13 +44,17 @@ impl Updater {
     let wtx = index.begin_write()?;
 
     // TODO：指定从哪个height开始同步。
-    let height = wtx
-      .open_table(HEIGHT_TO_BLOCK_HASH)?
-      .range(0..)?
-      .rev()
-      .next()
-      .map(|(height, _hash)| height.value() + 1)
-      .unwrap_or(0);
+
+    // let height = wtx
+    //   .open_table(HEIGHT_TO_BLOCK_HASH)?
+    //   .range(0..)?
+    //   .rev()
+    //   .next()
+    //   .map(|(height, _hash)| height.value() + 1)
+    //   .unwrap_or(0);
+
+    let height = index.get_mblock_height();
+    log::trace!("height is {height}");
 
     wtx
       .open_table(WRITE_TRANSACTION_STARTING_BLOCK_COUNT_TO_TIMESTAMP)?
@@ -135,17 +139,20 @@ impl Updater {
       uncommitted += 1;
 
       if uncommitted == 5000 {
-        self.commit(wtx, value_cache)?;
+        self.commit(index, wtx, value_cache)?;
         value_cache = HashMap::new();
         uncommitted = 0;
         wtx = index.begin_write()?;
-        let height = wtx
-          .open_table(HEIGHT_TO_BLOCK_HASH)?
-          .range(0..)?
-          .rev()
-          .next()
-          .map(|(height, _hash)| height.value() + 1)
-          .unwrap_or(0);
+
+        // let height = wtx
+        //   .open_table(HEIGHT_TO_BLOCK_HASH)?
+        //   .range(0..)?
+        //   .rev()
+        //   .next()
+        //   .map(|(height, _hash)| height.value() + 1)
+        //   .unwrap_or(0);
+        let height = index.get_mblock_height();
+
         if height != self.height {
           // another update has run between committing and beginning the new
           // write transaction
@@ -168,7 +175,7 @@ impl Updater {
     }
 
     if uncommitted > 0 {
-      self.commit(wtx, value_cache)?;
+      self.commit(index, wtx, value_cache)?;
     }
 
     if let Some(progress_bar) = &mut progress_bar {
@@ -405,11 +412,23 @@ impl Updater {
 
     // TODO 这里是做校验，证明找到上一个区块
     if let Some(prev_height) = self.height.checked_sub(1) {
-      let prev_hash = height_to_block_hash.get(&prev_height)?.unwrap();
 
-      if prev_hash.value() != block.header.prev_blockhash.as_ref() {
-        index.reorged.store(true, atomic::Ordering::Relaxed);
-        return Err(anyhow!("reorg detected at or before {prev_height}"));
+      // let prev_hash = height_to_block_hash.get(&prev_height)?.unwrap();
+      //
+      // if prev_hash.value() != block.header.prev_blockhash.as_ref() {
+      //   index.reorged.store(true, atomic::Ordering::Relaxed);
+      //   return Err(anyhow!("reorg detected at or before {prev_height}"));
+      // }
+
+      // TODO 要等保存的功能做完回来写
+      if let Some(prev_block) = index.get_mblock_by_height(prev_height){
+        log::trace!("--------------------------");
+        if prev_block.hash != block.header.prev_blockhash.to_string() {
+          index.reorged.store(true, atomic::Ordering::Relaxed);
+          return Err(anyhow!("reorg detected at or before {prev_height}"));
+        }
+      } else {
+        log::trace!("===========================");
       }
     }
 
@@ -422,7 +441,6 @@ impl Updater {
     let mut satpoint_to_inscription_id = wtx.open_table(SATPOINT_TO_INSCRIPTION_ID)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
 
-    // TODO 这个lost_sats不知道干啥用的
     let mut lost_sats = statistic_to_count
       .get(&Statistic::LostSats.key())?
       .map(|lost_sats| lost_sats.value())
@@ -521,7 +539,7 @@ impl Updater {
       }
 
       if let Some((tx, txid)) = block.txdata.get(0) {
-        log::trace!("Indexing transaction tx_offset:0 txid: {txid}");
+        log::trace!("===> Indexing transaction tx_offset:0 txid: {txid}");
 
         /// 这里传入的 input_sat_ranges 是 coinbase_inputs
         /// 相当于 挖矿奖励 加上各个交易的 gas
@@ -562,6 +580,7 @@ impl Updater {
         }
 
         outpoint_to_sat_ranges.insert(&OutPoint::null().store(), lost_sat_ranges.as_slice())?;
+        index.outpoint_to_sat_ranges(&OutPoint::null().store(), &lost_sat_ranges);
       }
     } else {
       for (tx, txid) in block.txdata.iter().skip(1).chain(block.txdata.first()) {
@@ -571,7 +590,10 @@ impl Updater {
 
     statistic_to_count.insert(&Statistic::LostSats.key(), &lost_sats)?;
 
-    height_to_block_hash.insert(&self.height, &block.header.block_hash().store())?;
+    // TODO 删除写height_to_block_hash
+    // height_to_block_hash.insert(&self.height, &block.header.block_hash().store())?;
+
+    index.insert_mblock(&self.height, block.header.block_hash().to_string());
 
     self.height += 1;
     self.outputs_traversed += outputs_in_block;
@@ -666,7 +688,11 @@ impl Updater {
     Ok(())
   }
 
-  fn commit(&mut self, wtx: WriteTransaction, value_cache: HashMap<OutPoint, u64>) -> Result {
+  fn commit<'index>(
+    &mut self,
+    index: &'index Index,
+    wtx: WriteTransaction,
+    value_cache: HashMap<OutPoint, u64>) -> Result {
     log::info!(
       "Committing at block height {}, {} outputs traversed, {} in map, {} cached",
       self.height,
@@ -687,6 +713,8 @@ impl Updater {
 
       for (outpoint, sat_range) in self.range_cache.drain() {
         outpoint_to_sat_ranges.insert(&outpoint, sat_range.as_slice())?;
+
+        index.outpoint_to_sat_ranges(&outpoint, &sat_range);
       }
 
       self.outputs_inserted_since_flush = 0;
@@ -696,7 +724,10 @@ impl Updater {
       let mut outpoint_to_value = wtx.open_table(OUTPOINT_TO_VALUE)?;
 
       for (outpoint, value) in value_cache {
+        log::trace!("outpoint_to_value {}", outpoint);
         outpoint_to_value.insert(&outpoint.store(), &value)?;
+
+        index.outpoint_to_value(&outpoint, &value);
       }
     }
 
