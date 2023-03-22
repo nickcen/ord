@@ -138,7 +138,7 @@ impl Updater {
 
       uncommitted += 1;
 
-      if uncommitted == 2000 {
+      if uncommitted == 10000 {
         self.commit(index, wtx, value_cache)?;
         value_cache = HashMap::new();
         uncommitted = 0;
@@ -359,8 +359,6 @@ impl Updater {
 
     let index_inscriptions = self.height >= index.first_inscription_height;
 
-    println!("self.height {}, first_inscription_height {}, index_inscriptions {}", self.height, index.first_inscription_height, index_inscriptions);
-
     if index_inscriptions {
       // Send all missing input outpoints to be fetched right away
       let txids = block
@@ -487,11 +485,11 @@ impl Updater {
           /// 找到当前这笔 inputs 的来源 outputs，然后找到这个 outputs 的 sat_ranges
           /// 这里就是选择从内存缓存取，还是数据库取
           ///
-          let sat_ranges = match self.range_cache.remove(&key) {
+          let sat_ranges = match self.range_cache.get(&key) {
             Some(sat_ranges) => {
               log::trace!("match range_cache");
               self.outputs_cached += 1;
-              sat_ranges
+              sat_ranges.clone()
             }
             None => {
               log::trace!("not match range_cache");

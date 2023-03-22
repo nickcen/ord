@@ -71,8 +71,8 @@ name = "ord"
 path = "src/bin/main.rs"
 
 [[bin]]
-name = "debug"
-path = "src/bin/debug.rs"
+name = "dev"
+path = "src/bin/dev.rs"
 
 [lib]
 name = "ord"

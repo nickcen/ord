@@ -190,7 +190,7 @@ pub fn debug() {
     cookie_file: None,
     data_dir: None,
     first_inscription_height: None,
-    height_limit: Some(5000),
+    height_limit: Some(80000),
     index: None,
     index_sats: true,
     regtest: false,
@@ -208,7 +208,7 @@ pub fn debug() {
 
   // fs::copy("/Volumes/Personal/Library/Application Support/ord/index_74998.redb", "/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
   // fs::remove_file("/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
-  index.db.truncate("blocks".to_string());
+  // index.db.truncate("blocks".to_string());
 
   index.update().unwrap(); // run index
 

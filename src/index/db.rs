@@ -14,10 +14,9 @@ pub struct MBlock {
 }
 
 pub struct MOutpoint {
-  pub id: i32,
+  pub id: u64,
   pub txid: String,
   pub vout: String,
-  pub value: i32,
 }
 
 pub struct MSatRange {
@@ -73,32 +72,18 @@ impl DB {
     conn.exec_drop("insert ignore into blocks (hash, height) values (:hash, :height)", params! {"height" => height, "hash" => hash}).unwrap();
   }
 
-  pub fn insert_outpoint(&self, txid: String, vout: u32) {
+  pub fn insert_outpoint(&self, txid: String, vout: u32) -> u64{
     let mut conn = self.get_connection();
     conn.exec_drop("insert into outpoints (txid, vout) values (:txid, :vout)", params! {"txid" => txid, "vout" => vout}).unwrap();
+    conn.last_insert_id()
   }
 
-  pub fn get_outpoint(&self, txid: String, vout: u32) -> MOutpoint {
+  pub fn get_outpoint(&self, txid: String, vout: u32) -> Option<u64> {
     let mut conn = self.get_connection();
 
-    match conn.exec_first("select id, txid, vout, value from outpoints where txid = :txid and vout = :vout", params! {"txid" => txid.clone(), "vout" => vout}).map(|row| {
-      row.map(|(id, txid, vout, value)| MOutpoint {
-        id,
-        txid,
-        vout,
-        value
-      })
-    }).unwrap(){
-      None => {
-        self.insert_outpoint(txid.clone(), vout);
-        self.get_outpoint(txid.clone(), vout)
-      }
-      Some(record) => {
-        record
-      }
-    }
+    let result: Option<u64> = conn.exec_first("select id from outpoints where txid = :txid and vout = :vout", params! {"txid" => txid.clone(), "vout" => vout}).unwrap();
+    result
   }
-
 
   pub fn get_outpoint_to_sat_ranges(&self, outpointvalue: &OutPointValue) -> Vec<u8> {
     log::trace!("get_outpoint_to_sat_ranges");
@@ -108,18 +93,13 @@ impl DB {
     let outpoint_txid = outpoint.txid.to_string();
     let outpoint_vout = outpoint.vout;
 
-    let result = self.get_outpoint(outpoint_txid, outpoint_vout);
 
-    let mut sats = Vec::new();
+    let sat_ranges: Vec<u8> = conn.exec_first("select unhex(sat_ranges) from outpoints where txid = :txid and vout = :vout", params! {
+      "txid" => outpoint_txid,
+      "vout" => outpoint_vout
+    }).unwrap().unwrap();
 
-    let stmt = conn.prep("select r0, r1 from sat_ranges where outpoint_id = :outpoint_id order by sort asc").unwrap();
-    let result = conn.exec(&stmt, params! {
-      "outpoint_id" => result.id
-    }).unwrap().iter().for_each(|row: &(u64, u64)| {
-      sats.extend_from_slice(&(row.0, row.1).store());
-    });
-
-    sats
+    sat_ranges
   }
 
   pub fn insert_outpoint_to_sat_ranges(&self, outpointvalue: &OutPointValue, sats: &Vec<u8>) {
@@ -130,27 +110,8 @@ impl DB {
     let outpoint_txid = outpoint.txid.to_string();
     let outpoint_vout = outpoint.vout;
 
-    let result = self.get_outpoint(outpoint_txid.clone(), outpoint_vout);
-
-    // 这里要做删除是因为有一个特殊的 outpoint，OutPoint::null()，他会持续调整他掌握的sat_ranges，其他 outpoint 应该只有增加
-    conn.exec_drop("delete from sat_ranges where outpoint_id = :outpoint_id", params! {"outpoint_id" => result.id}).unwrap();
-
-    conn.exec_drop("insert into outpoints (txid, vout) values (:txid, :vout)", params! {"txid" => outpoint_txid.clone(), "vout" => outpoint_vout}).unwrap();
-
-    let stmt = conn.prep("insert into sat_ranges (r0, r1, outpoint_id, sort) VALUES (:r0, :r1, :outpoint_id, :sort)")
-      .unwrap();
-
-    let mut sort = 0;
-    for chunk in sats.clone().chunks_exact(11) {
-      let range = SatRange::load(chunk.try_into().unwrap());
-      conn.exec_drop(&stmt, params! {
-        "r0" => range.0,
-        "r1" => range.1,
-        "sort" => sort,
-        "outpoint_id" => result.id
-     }).unwrap();
-      sort += 1;
-    }
+    conn.exec_drop("insert into outpoints (txid, vout, sat_ranges) values (:txid, :vout, :sat_ranges) on duplicate key update sat_ranges = :sat_ranges",
+                   params! {"txid" => outpoint_txid, "outpoint_vout" => sats, "sat_ranges" => hex::encode(sats)}).unwrap();
   }
 
   pub fn batch_insert_outpoint_to_sat_ranges(&self, range_cache: &HashMap<OutPointValue, Vec<u8>>) {
@@ -158,45 +119,17 @@ impl DB {
 
     let mut conn = self.get_connection();
 
-    // conn.exec_batch(
-    //   "delete from sat_ranges where outpoint_txid = :outpoint_txid and outpoint_vout = :outpoint_vout",
-    //   range_cache.iter().map(|(outpointvalue, _)| {
-    //     let outpoint: OutPoint = Entry::load(*outpointvalue);
-    //     params! {"outpoint_txid" => outpoint.txid.to_string(), "outpoint_vout" => outpoint.vout}
-    //   })).unwrap();
-
     conn.exec_batch(
-      "insert into outpoints (txid, vout) values (:outpoint_txid, :outpoint_vout)",
-      range_cache.iter().map(|(outpointvalue, _)| {
+      "insert into outpoints (txid, vout, sat_ranges) values (:txid, :vout, :sat_ranges) on duplicate key update sat_ranges = :sat_ranges",
+      range_cache.iter().map(|(outpointvalue, sats)| {
         let outpoint: OutPoint = Entry::load(*outpointvalue);
-        params! {"outpoint_txid" => outpoint.txid.to_string(), "outpoint_vout" => outpoint.vout}
-      })).unwrap();
+        let outpoint_txid = outpoint.txid.to_string();
+        let outpoint_vout = outpoint.vout;
 
-
-    let mut records = vec![];
-
-    for (outpointvalue, sats) in range_cache.iter() {
-      let outpoint: OutPoint = Entry::load(*outpointvalue);
-      let outpoint_txid = outpoint.txid.to_string();
-      let outpoint_vout = outpoint.vout;
-      let result = self.get_outpoint(outpoint_txid.clone(), outpoint_vout);
-
-      let mut sort = 0;
-      for chunk in sats.clone().chunks_exact(11) {
-        sort += 1;
-        let range = SatRange::load(chunk.try_into().unwrap());
-        records.push(params! {
-            "r0" => range.0,
-            "r1" => range.1,
-            "sort" => sort,
-            "outpoint_id" => result.id
-          })
-      }
-    };
-
-    conn.exec_batch(
-      "insert ignore into sat_ranges (r0, r1, outpoint_id, sort) VALUES (:r0, :r1, :outpoint_id, :sort)",
-      records,
+        params! {
+          "txid" => outpoint_txid.clone(), "vout" => outpoint_vout, "sat_ranges" => hex::encode(sats)
+        }
+      }),
     ).unwrap();
   }
 
@@ -222,7 +155,16 @@ impl DB {
     let outpoint_vout = sat_point.outpoint.vout;
 
     let result = self.get_outpoint(outpoint_txid.clone(), outpoint_vout);
-    conn.exec_drop("insert into sat_points (sat, outpoint_id, offset) values (:sat, :outpoint_id, :offset) on duplicate key update outpoint_id = :outpoint_id, offset = :offset", params! {"sat" => start, "outpoint_id" => result.id, "offset" => sat_point.offset}).unwrap();
+    let outpoint_id = match result {
+      None => {
+        self.insert_outpoint(outpoint_txid.clone(), outpoint_vout)
+      }
+      Some(outpoint_id) => {
+        outpoint_id
+      }
+    };
+
+    conn.exec_drop("insert into sat_points (sat, outpoint_id, offset) values (:sat, :outpoint_id, :offset) on duplicate key update outpoint_id = :outpoint_id, offset = :offset", params! {"sat" => start, "outpoint_id" => outpoint_id, "offset" => sat_point.offset}).unwrap();
   }
 
   pub fn truncate(&self, table_name: String) {
