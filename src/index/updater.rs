@@ -359,6 +359,8 @@ impl Updater {
 
     let index_inscriptions = self.height >= index.first_inscription_height;
 
+    println!("self.height {}, first_inscription_height {}, index_inscriptions {}", self.height, index.first_inscription_height, index_inscriptions);
+
     if index_inscriptions {
       // Send all missing input outpoints to be fetched right away
       let txids = block

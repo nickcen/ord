@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bitcoin::OutPoint;
-use mysql::{from_row, params, Pool, PooledConn};
+use mysql::{from_row, params, Params, Pool, PooledConn, Statement};
 use mysql::prelude::{BinQuery, Queryable, WithParams};
 use once_cell::sync::OnceCell;
 
@@ -93,13 +93,19 @@ impl DB {
     let outpoint_txid = outpoint.txid.to_string();
     let outpoint_vout = outpoint.vout;
 
-
-    let sat_ranges: Vec<u8> = conn.exec_first("select unhex(sat_ranges) from outpoints where txid = :txid and vout = :vout", params! {
+    let ret = match conn.exec_first::<Option<String>, &str, Params>("select sat_ranges from outpoints where txid = :txid and vout = :vout", params! {
       "txid" => outpoint_txid,
       "vout" => outpoint_vout
-    }).unwrap().unwrap();
+    }).unwrap().unwrap() {
+      None => {
+        vec![]
+      }
+      Some(sat_ranges) => {
+        hex::decode(sat_ranges).unwrap()
+      }
+    };
 
-    sat_ranges
+    ret
   }
 
   pub fn insert_outpoint_to_sat_ranges(&self, outpointvalue: &OutPointValue, sats: &Vec<u8>) {
