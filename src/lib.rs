@@ -190,7 +190,7 @@ pub fn debug() {
     cookie_file: None,
     data_dir: None,
     first_inscription_height: None,
-    height_limit: Some(50),
+    height_limit: Some(2000),
     index: None,
     index_sats: false,
     regtest: false,

@@ -464,13 +464,6 @@ impl Updater {
       }
     }
 
-    let mut inscription_id_to_inscription_entry =
-      wtx.open_table(INSCRIPTION_ID_TO_INSCRIPTION_ENTRY)?;
-    let mut inscription_id_to_satpoint = wtx.open_table(INSCRIPTION_ID_TO_SATPOINT)?;
-    let mut inscription_number_to_inscription_id =
-      wtx.open_table(INSCRIPTION_NUMBER_TO_INSCRIPTION_ID)?;
-    let mut sat_to_inscription_id = wtx.open_table(SAT_TO_INSCRIPTION_ID)?;
-    let mut satpoint_to_inscription_id = wtx.open_table(SATPOINT_TO_INSCRIPTION_ID)?;
     let mut statistic_to_count = wtx.open_table(STATISTIC_TO_COUNT)?;
 
     let mut lost_sats = statistic_to_count
@@ -488,9 +481,6 @@ impl Updater {
     )?;
 
     if self.index_sats {
-      let mut sat_to_satpoint = wtx.open_table(SAT_TO_SATPOINT)?;
-      let mut outpoint_to_sat_ranges = wtx.open_table(OUTPOINT_TO_SAT_RANGES)?;
-
       /// 这个应该是把 inputs 里面的所有 sat_range 组成一个数组
       let mut coinbase_inputs = VecDeque::new();
 
@@ -545,7 +535,6 @@ impl Updater {
         self.index_transaction_sats(
           tx,
           *txid,
-          &mut sat_to_satpoint,
           &mut input_sat_ranges,
           &mut sat_ranges_written,
           &mut outputs_in_block,
@@ -569,7 +558,6 @@ impl Updater {
         self.index_transaction_sats(
           tx,
           *txid,
-          &mut sat_to_satpoint,
           &mut coinbase_inputs,
           &mut sat_ranges_written,
           &mut outputs_in_block,
@@ -637,7 +625,6 @@ impl Updater {
     &mut self,
     tx: &Transaction,
     txid: Txid,
-    sat_to_satpoint: &mut Table<u64, &SatPointValue>,
     input_sat_ranges: &mut VecDeque<(u64, u64)>,
     sat_ranges_written: &mut u64,
     outputs_traversed: &mut u64,
