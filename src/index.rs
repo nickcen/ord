@@ -229,7 +229,7 @@ impl Index {
 
         if options.index_sats {
           // TODO: 这里是初始化要插入一笔给到 lost
-          db.insert_outpoint_to_sat_ranges(&OutPoint::null().store(), &vec![]);
+          db.update_outpoint_sat_ranges(&OutPoint::null().store(), &vec![]);
           // tx.open_table(OUTPOINT_TO_SAT_RANGES)?
           //   .insert(&OutPoint::null().store(), [].as_slice())?;
         }
@@ -318,7 +318,7 @@ impl Index {
   }
 
   pub(crate) fn has_sat_index(&self) -> Result<bool> {
-    Ok(true)
+    Ok(false)
     // match self.begin_read()?.0.open_table(OUTPOINT_TO_SAT_RANGES) {
     //   Ok(_) => Ok(true),
     //   Err(redb::Error::TableDoesNotExist(_)) => Ok(false),
@@ -392,9 +392,21 @@ impl Index {
   pub(crate) fn outputs(&self) -> Result {
     let rtx = self.begin_read()?;
 
-    rtx.export()?;
+    rtx.export(self)?;
 
     Ok(())
+  }
+
+  pub(crate) fn enscription(&self, txid:String) {
+    let transaction = self.db.get_transaction(txid).unwrap();
+    let enscription = Inscription::from_transaction(&transaction).unwrap();
+    println!("content_type: {:?}", enscription.content_type().unwrap());
+    println!("content_length: {:?}", enscription.content_length().unwrap());
+    println!("body: {:?}", base64::encode(&enscription.body().unwrap()));
+  }
+
+  pub(crate) fn fetch(&self, txid: String) -> Result {
+    Updater::fetch(self, txid)
   }
 
   pub(crate) fn is_reorged(&self) -> bool {
@@ -919,6 +931,7 @@ impl Index {
     .store();
 
     Ok(
+      /// 这里要换成数据库的读
       satpoint_to_id
         .range::<&[u8; 44]>(&start..=&end)?
         .map(|(satpoint, id)| (Entry::load(*satpoint.value()), Entry::load(*id.value()))),

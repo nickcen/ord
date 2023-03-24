@@ -1070,6 +1070,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cryptoapis"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce0813bc0132747d1a077964f8a7349983c6785c2b481f8b49e97d70e9310724"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "ctor"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2682,6 +2695,7 @@ dependencies = [
  "boilerplate",
  "chrono",
  "clap",
+ "cryptoapis",
  "ctrlc",
  "derive_more",
  "dirs",
@@ -3191,6 +3205,7 @@ dependencies = [
  "js-sys",
  "log",
  "mime",
+ "mime_guess",
  "native-tls",
  "once_cell",
  "percent-encoding",

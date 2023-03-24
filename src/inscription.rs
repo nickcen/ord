@@ -29,6 +29,7 @@ impl Inscription {
   }
 
   pub(crate) fn from_transaction(tx: &Transaction) -> Option<Inscription> {
+    // log::trace!("witness is {:?}", tx.input.get(0)?.witness);
     InscriptionParser::parse(&tx.input.get(0)?.witness).ok()
   }
 

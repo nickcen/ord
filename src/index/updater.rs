@@ -80,6 +80,34 @@ impl Updater {
     updater.update_index(index, wtx)
   }
 
+  pub(crate) fn fetch(index: &Index, txid: String) -> Result {
+    log::trace!("fetch");
+    let mut updater = Self {
+      range_cache: HashMap::new(),
+      height: 0 as u64,
+      index_sats: index.has_sat_index()?,
+      sat_ranges_since_flush: 0,
+      outputs_cached: 0,
+      outputs_inserted_since_flush: 0,
+      outputs_traversed: 0,
+    };
+    updater.fetch_transaction(index, &txid)
+  }
+
+  fn fetch_transaction<'index>(
+    &mut self,
+    index: &'index Index,
+    txid: &String,
+  ) -> Result {
+    let (mut outpoint_sender, mut value_receiver) = self.spawn_fetcher(index)?;
+
+    outpoint_sender.blocking_send(OutPoint{ txid: Txid::from_str(txid)?, vout: 0 })?;
+    value_receiver.blocking_recv().ok_or_else(|| {
+      anyhow!("failed to get transaction for {}",txid)
+    })?;
+    Ok(())
+  }
+
   fn update_index<'index>(
     &mut self,
     index: &'index Index,
@@ -105,7 +133,8 @@ impl Updater {
 
     let rx = Self::fetch_blocks_from(index, self.height, self.index_sats)?;
 
-    let (mut outpoint_sender, mut value_receiver) = Self::spawn_fetcher(index)?;
+    /// outpoint_sender 是后续递归往前获取 inscription 的outputs的时候要用的
+    let (mut outpoint_sender, mut value_receiver) = self.spawn_fetcher(index)?;
 
     let mut uncommitted = 0;
     let mut value_cache = HashMap::new();
@@ -138,7 +167,7 @@ impl Updater {
 
       uncommitted += 1;
 
-      if uncommitted == 10000 {
+      if uncommitted == 5000 {
         self.commit(index, wtx, value_cache)?;
         value_cache = HashMap::new();
         uncommitted = 0;
@@ -271,7 +300,7 @@ impl Updater {
     }
   }
 
-  fn spawn_fetcher(index: &Index) -> Result<(Sender<OutPoint>, Receiver<u64>)> {
+  fn spawn_fetcher(&self, index: &Index) -> Result<(Sender<OutPoint>, Receiver<u64>)> {
     let fetcher = Fetcher::new(&index.rpc_url, index.auth.clone())?;
 
     // Not sure if any block has more than 20k inputs, but none so far after first inscription block
@@ -287,6 +316,8 @@ impl Updater {
     // Since we are already requesting blocks on a separate thread, and we don't want to break if anything
     // else runs a request, we keep this to 12.
     const PARALLEL_REQUESTS: usize = 12;
+
+    let db = index.db.clone();
 
     std::thread::spawn(move || {
       let rt = tokio::runtime::Builder::new_multi_thread()
@@ -313,7 +344,7 @@ impl Updater {
           let mut futs = Vec::with_capacity(PARALLEL_REQUESTS);
           for chunk in outpoints.chunks(chunk_size) {
             let txids = chunk.iter().map(|outpoint| outpoint.txid).collect();
-            let fut = fetcher.get_transactions(txids);
+            let fut = fetcher.get_transactions(db, txids);
             futs.push(fut);
           }
           let txs = match try_join_all(futs).await {
@@ -346,8 +377,8 @@ impl Updater {
     block: BlockData,
     value_cache: &mut HashMap<OutPoint, u64>,
   ) -> Result<()> {
-    // TODO: 给block里面的sat打编号
-    log::trace!("index_block {:?}", block.header.block_hash());
+    /// 给block里面的sat打编号
+    // log::trace!("index_block {:?}", block.header.block_hash());
 
     // If value_receiver still has values something went wrong with the last block
     // Could be an assert, shouldn't recover from this and commit the last block
@@ -359,8 +390,6 @@ impl Updater {
 
     let index_inscriptions = self.height >= index.first_inscription_height;
 
-    println!("self.height {}, first_inscription_height {}, index_inscriptions {}", self.height, index.first_inscription_height, index_inscriptions);
-
     if index_inscriptions {
       // Send all missing input outpoints to be fetched right away
       let txids = block
@@ -368,6 +397,10 @@ impl Updater {
         .iter()
         .map(|(_, txid)| txid)
         .collect::<HashSet<_>>();
+
+      /// 遍历 block 里面的 transaction，找到每个 transaction 里面的 input 相对应的 output。
+      /// 通过outpoint_sender，获取 outpoint 所在他所在的 transaction
+      ///
       for (tx, _) in &block.txdata {
         for input in &tx.input {
           let prev_output = input.previous_output;
@@ -386,16 +419,20 @@ impl Updater {
           }
           // We don't need input values we already have in our outpoint_to_value table from earlier blocks that
           // were committed to db already
-          if outpoint_to_value.get(&prev_output.store())?.is_some() {
+          // if outpoint_to_value.get(&prev_output.store())?.is_some() {
+          //   continue;
+          // }
+          if let Some(_) = index.db.get_outpoint_value(prev_output.txid.to_string(), prev_output.vout) {
             continue;
           }
+
           // We don't know the value of this tx input. Send this outpoint to background thread to be fetched
           outpoint_sender.blocking_send(prev_output)?;
         }
       }
     }
 
-    let mut height_to_block_hash = wtx.open_table(HEIGHT_TO_BLOCK_HASH)?;
+    // let mut height_to_block_hash = wtx.open_table(HEIGHT_TO_BLOCK_HASH)?;
 
     let start = Instant::now();
     let mut sat_ranges_written = 0;
@@ -410,7 +447,7 @@ impl Updater {
       block.txdata.len()
     );
 
-    // TODO 这里是做校验，证明找到上一个区块
+    /// 这里是做校验，证明找到上一个区块
     if let Some(prev_height) = self.height.checked_sub(1) {
 
       // let prev_hash = height_to_block_hash.get(&prev_height)?.unwrap();
@@ -487,15 +524,17 @@ impl Updater {
           /// 找到当前这笔 inputs 的来源 outputs，然后找到这个 outputs 的 sat_ranges
           /// 这里就是选择从内存缓存取，还是数据库取
           ///
-          let sat_ranges = match self.range_cache.get(&key) {
+          /// 这里用remove就表示用过的outputs就不保留了。
+          ///
+          let sat_ranges = match self.range_cache.remove(&key) {
             Some(sat_ranges) => {
               log::trace!("match range_cache");
               self.outputs_cached += 1;
-              sat_ranges.clone()
+              sat_ranges
             }
             None => {
               log::trace!("not match range_cache");
-              index.db.get_outpoint_to_sat_ranges(&key).to_vec()
+              index.db.get_outpoint_sat_ranges(&key).to_vec()
 
               // outpoint_to_sat_ranges
               // .remove(&key)?
@@ -554,7 +593,7 @@ impl Updater {
         //   .remove(&OutPoint::null().store())?
         //   .map(|ranges| ranges.value().to_vec())
         //   .unwrap_or_default();
-        let mut lost_sat_ranges = index.db.get_outpoint_to_sat_ranges(&OutPoint::null().store());
+        let mut lost_sat_ranges = index.db.get_outpoint_sat_ranges(&OutPoint::null().store());
 
         for (start, end) in coinbase_inputs {
           if !Sat(start).is_common() {
@@ -579,18 +618,15 @@ impl Updater {
         }
 
         // outpoint_to_sat_ranges.insert(&OutPoint::null().store(), lost_sat_ranges.as_slice())?;
-        index.db.insert_outpoint_to_sat_ranges(&OutPoint::null().store(), &lost_sat_ranges);
+        index.db.update_outpoint_sat_ranges(&OutPoint::null().store(), &lost_sat_ranges);
       }
     } else {
       for (tx, txid) in block.txdata.iter().skip(1).chain(block.txdata.first()) {
-        lost_sats += inscription_updater.index_transaction_inscriptions(tx, *txid, None)?;
+        lost_sats += inscription_updater.index_transaction_inscriptions(index, tx, *txid, None)?;
       }
     }
 
     statistic_to_count.insert(&Statistic::LostSats.key(), &lost_sats)?;
-
-    // TODO 删除写height_to_block_hash
-    // height_to_block_hash.insert(&self.height, &block.header.block_hash().store())?;
 
     index.db.insert_mblock(&self.height, block.header.block_hash().to_string());
 
@@ -618,7 +654,7 @@ impl Updater {
     index: &Index
   ) -> Result {
     if index_inscriptions {
-      inscription_updater.index_transaction_inscriptions(tx, txid, Some(input_sat_ranges))?;
+      inscription_updater.index_transaction_inscriptions(index, tx, txid, Some(input_sat_ranges))?;
     }
 
     log::trace!("all the input range is {:?}", input_sat_ranges);

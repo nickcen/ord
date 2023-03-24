@@ -190,12 +190,12 @@ pub fn debug() {
     cookie_file: None,
     data_dir: None,
     first_inscription_height: None,
-    height_limit: Some(147980),
+    height_limit: Some(767431),
     index: None,
-    index_sats: true,
+    index_sats: false,
     regtest: false,
-    // rpc_url: Some("13.231.161.20:8332".to_string()),
-    rpc_url: Some("192.168.2.191:8332".to_string()),
+    rpc_url: Some("13.231.161.20:8332".to_string()),
+    // rpc_url: Some("192.168.2.191:8332".to_string()),
     mysql_url: "mysql://test:test@localhost:3306/bitcoin".to_string(),
     signet: false,
     testnet: false,
@@ -204,7 +204,10 @@ pub fn debug() {
 
   let index = Index::open(&options).unwrap();
 
-  // index.outputs().unwrap(); // run outputs
+  // index.outputs(); // run outputs
+  // index.fetch("140b16c2d3eca31586dd99106f53526011d4e366d38eb64e3c6f601c94758867".to_string()).unwrap(); // run outputs
+  // index.enscription("140b16c2d3eca31586dd99106f53526011d4e366d38eb64e3c6f601c94758867".to_string());
+
 
   // fs::copy("/Volumes/Personal/Library/Application Support/ord/index_74998.redb", "/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();
   // fs::remove_file("/Volumes/Personal/Library/Application Support/ord/index.redb").unwrap();

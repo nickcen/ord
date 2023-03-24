@@ -1,10 +1,12 @@
+use log::log;
 use {
   anyhow::{anyhow, Result},
   bitcoin::{Transaction, Txid},
   bitcoincore_rpc::Auth,
-  hyper::{client::HttpConnector, Body, Client, Method, Request, Uri},
+  hyper::{Body, Client, client::HttpConnector, Method, Request, Uri},
   serde::Deserialize,
   serde_json::{json, Value},
+  super::*,
 };
 
 pub(crate) struct Fetcher {
@@ -48,21 +50,35 @@ impl Fetcher {
     Ok(Fetcher { client, url, auth })
   }
 
-  pub(crate) async fn get_transactions(&self, txids: Vec<Txid>) -> Result<Vec<Transaction>> {
+  /// 根据 txid 获取 transaction
+  pub(crate) async fn get_transactions(&self, db: DB, txids: Vec<Txid>) -> Result<Vec<Transaction>> {
     if txids.is_empty() {
       return Ok(Vec::new());
     }
 
+    let mut mapping = HashMap::<String, Transaction>::default();
+
+    /// 如果数据库里面加一层 transaction 的表，这里可以不一定要发送json请求
     let mut reqs = Vec::with_capacity(txids.len());
     for (i, txid) in txids.iter().enumerate() {
-      let req = json!({
-        "jsonrpc": "2.0",
-        "id": i, // Use the index as id, so we can quickly sort the response
-        "method": "getrawtransaction",
-        "params": [ txid ]
-      });
-      reqs.push(req);
-    }
+      match db.get_transaction(txid.to_string()) {
+        None => {
+          let req = json!({
+            "jsonrpc": "2.0",
+            "id": i, // Use the index as id, so we can quickly sort the response
+            "method": "getrawtransaction",
+            "params": [ txid ]
+          });
+          reqs.push(req);
+        }
+        Some(t) => {
+          mapping.insert(txid.to_string(), t);
+        }
+      }
+    };
+
+    let mut txs = Vec::<Transaction>::with_capacity(txids.len());
+
 
     let body = Value::Array(reqs).to_string();
     let req = Request::builder()
@@ -90,9 +106,9 @@ impl Fetcher {
     // Results from batched JSON-RPC requests can come back in any order, so we must sort them by id
     results.sort_by(|a, b| a.id.cmp(&b.id));
 
-    let txs = results
+    results
       .into_iter()
-      .map(|res| {
+      .for_each(|res| {
         res
           .result
           .ok_or_else(|| anyhow!("Missing result for batched JSON-RPC response"))
@@ -101,12 +117,22 @@ impl Fetcher {
               .map_err(|e| anyhow!("Result for batched JSON-RPC response not valid hex: {e}"))
           })
           .and_then(|hex| {
-            bitcoin::consensus::deserialize(&hex).map_err(|e| {
-              anyhow!("Result for batched JSON-RPC response not valid bitcoin tx: {e}")
-            })
-          })
-      })
-      .collect::<Result<Vec<Transaction>>>()?;
-    Ok(txs)
+            match bitcoin::consensus::deserialize::<Transaction>(&hex) {
+              Ok(t) => {
+                db.insert_transaction(t.txid().to_string(), &hex);
+                mapping.insert(t.txid().to_string(), t.clone());
+                Ok(())
+              }
+              Err(e) => {
+                Err(anyhow!("Result for batched JSON-RPC response not valid bitcoin tx: {e}"))
+              }
+            }
+          }).unwrap();
+      });
+
+
+    Ok(txids.iter().map(|txid| {
+      mapping.get(&txid.to_string()).unwrap().clone()
+    }).collect())
   }
 }
