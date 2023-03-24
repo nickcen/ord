@@ -317,7 +317,7 @@ impl Index {
   }
 
   pub(crate) fn has_sat_index(&self) -> Result<bool> {
-    Ok(false)
+    Ok(true)
     // match self.begin_read()?.0.open_table(OUTPOINT_TO_SAT_RANGES) {
     //   Ok(_) => Ok(true),
     //   Err(redb::Error::TableDoesNotExist(_)) => Ok(false),

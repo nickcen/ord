@@ -366,7 +366,7 @@ impl DB {
 
   pub fn get_inscription_next_number(&self) -> u64 {
     let mut conn = self.get_connection();
-    match conn.query_first::<u64, &str>("select max(number) from inscriptions").unwrap() {
+    match conn.query_first::<Option<u64>, &str>("select max(number) from inscriptions").unwrap().unwrap() {
       None => {
         0
       }
