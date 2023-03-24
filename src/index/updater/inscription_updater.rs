@@ -11,60 +11,40 @@ enum Origin {
   Old(SatPoint),
 }
 
-pub(super) struct InscriptionUpdater<'a, 'db, 'tx> {
+pub(super) struct InscriptionUpdater<'a> {
   flotsam: Vec<Flotsam>,
   height: u64,
-  id_to_satpoint: &'a mut Table<'db, 'tx, &'static InscriptionIdValue, &'static SatPointValue>,
   value_receiver: &'a mut Receiver<u64>,
-  id_to_entry: &'a mut Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
   lost_sats: u64,
   next_number: u64,
-  number_to_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
-  outpoint_to_value: &'a mut Table<'db, 'tx, &'static OutPointValue, u64>,
   reward: u64,
-  sat_to_inscription_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
-  satpoint_to_id: &'a mut Table<'db, 'tx, &'static SatPointValue, &'static InscriptionIdValue>,
   timestamp: u32,
   value_cache: &'a mut HashMap<OutPoint, u64>,
+  db: &'a DB
 }
 
-impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
+impl<'a> InscriptionUpdater<'a> {
   pub(super) fn new(
     height: u64,
-    id_to_satpoint: &'a mut Table<'db, 'tx, &'static InscriptionIdValue, &'static SatPointValue>,
     value_receiver: &'a mut Receiver<u64>,
-    id_to_entry: &'a mut Table<'db, 'tx, &'static InscriptionIdValue, InscriptionEntryValue>,
     lost_sats: u64,
-    number_to_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
-    outpoint_to_value: &'a mut Table<'db, 'tx, &'static OutPointValue, u64>,
-    sat_to_inscription_id: &'a mut Table<'db, 'tx, u64, &'static InscriptionIdValue>,
-    satpoint_to_id: &'a mut Table<'db, 'tx, &'static SatPointValue, &'static InscriptionIdValue>,
     timestamp: u32,
     value_cache: &'a mut HashMap<OutPoint, u64>,
+    db: &'a DB
   ) -> Result<Self> {
     /// 找到库里面最大的 number，然后加1
-    let next_number = number_to_id
-      .iter()?
-      .rev()
-      .map(|(number, _id)| number.value() + 1)
-      .next()
-      .unwrap_or(0);
+    let next_number = db.get_inscription_next_number();
 
     Ok(Self {
       flotsam: Vec::new(),
       height,
-      id_to_satpoint,
       value_receiver,
-      id_to_entry,
       lost_sats,
       next_number,
-      number_to_id,
-      outpoint_to_value,
       reward: Height(height).subsidy(),
-      sat_to_inscription_id,
-      satpoint_to_id,
       timestamp,
       value_cache,
+      db
     })
   }
 
@@ -90,15 +70,24 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
         /// 从而知道，某个 inscription 会落到哪个新的 output 上
         ///
         // TODO 用 SATPOINT_TO_INSCRIPTION_ID 这张表
-        for (old_satpoint, inscription_id) in
-          Index::inscriptions_on_output(self.satpoint_to_id, tx_in.previous_output)?
+        for old_satpoint in self.db.get_sat_point_by_outpoint(&tx_in.previous_output)
+          // Index::inscriptions_on_output(self.satpoint_to_id, tx_in.previous_output)?
         {
-          log::trace!("old_satpoint:{:?}, inscription_id:{:?}", old_satpoint, inscription_id);
-          inscriptions.push(Flotsam {
-            offset: input_value + old_satpoint.offset,
-            inscription_id,
-            origin: Origin::Old(old_satpoint),
-          });
+          if let Some(inscription) = self.db.get_inscription_by_sat_point(&old_satpoint) {
+            let out_point = self.db.get_outpoint_by_id(old_satpoint.outpoint_id).unwrap();
+            inscriptions.push(Flotsam {
+              offset: input_value + old_satpoint.offset,
+              inscription_id: InscriptionId{
+                txid: Txid::from_str(&inscription.inscription_id)?,
+                index: 0
+              },
+              origin: Origin::Old(SatPoint{ outpoint: OutPoint{
+                txid: Txid::from_str(&out_point.txid)?,
+                vout: out_point.vout.parse()?
+              }, offset: old_satpoint.offset }),
+            });
+          }
+
         }
 
         input_value += if let Some(value) = self.value_cache.remove(&tx_in.previous_output) {
@@ -230,7 +219,8 @@ impl<'a, 'db, 'tx> InscriptionUpdater<'a, 'db, 'tx> {
 
     match flotsam.origin {
       Origin::Old(old_satpoint) => {
-        self.satpoint_to_id.remove(&old_satpoint.store())?;
+        self.db.update_inscription_sat_point(&flotsam.inscription_id, Some(&old_satpoint));
+        // self.satpoint_to_id.remove(&old_satpoint.store())?;
       }
       Origin::New(fee) => {
         // self

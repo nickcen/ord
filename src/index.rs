@@ -228,7 +228,6 @@ impl Index {
           .insert(&Statistic::Schema.key(), &SCHEMA_VERSION)?;
 
         if options.index_sats {
-          // TODO: 这里是初始化要插入一笔给到 lost
           db.update_outpoint_sat_ranges(&OutPoint::null().store(), &vec![]);
           // tx.open_table(OUTPOINT_TO_SAT_RANGES)?
           //   .insert(&OutPoint::null().store(), [].as_slice())?;

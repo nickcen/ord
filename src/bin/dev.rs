@@ -1,6 +1,6 @@
 use std::env;
 
 fn main() {
-  env::set_var("RUST_LOG", "debug");
+  env::set_var("RUST_LOG", "info");
   ord::debug();
 }

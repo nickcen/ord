@@ -43,8 +43,6 @@ impl Updater {
   pub(crate) fn update(index: &Index) -> Result {
     let wtx = index.begin_write()?;
 
-    // TODO：指定从哪个height开始同步。
-
     // let height = wtx
     //   .open_table(HEIGHT_TO_BLOCK_HASH)?
     //   .range(0..)?
@@ -377,7 +375,6 @@ impl Updater {
     block: BlockData,
     value_cache: &mut HashMap<OutPoint, u64>,
   ) -> Result<()> {
-    /// 给block里面的sat打编号
     // log::trace!("index_block {:?}", block.header.block_hash());
 
     // If value_receiver still has values something went wrong with the last block
@@ -483,16 +480,11 @@ impl Updater {
 
     let mut inscription_updater = InscriptionUpdater::new(
       self.height,
-      &mut inscription_id_to_satpoint,
       value_receiver,
-      &mut inscription_id_to_inscription_entry,
       lost_sats,
-      &mut inscription_number_to_inscription_id,
-      &mut outpoint_to_value,
-      &mut sat_to_inscription_id,
-      &mut satpoint_to_inscription_id,
       block.header.time,
       value_cache,
+      &index.db
     )?;
 
     if self.index_sats {
@@ -606,7 +598,7 @@ impl Updater {
             //   .store(),
             // )?;
 
-            index.db.insert_sat_to_satpoint(&start, &SatPoint {
+            index.db.insert_sat_to_sat_point(&start, &SatPoint {
               outpoint: OutPoint::null(),
               offset: lost_sats,
             });
@@ -681,7 +673,7 @@ impl Updater {
         /// offset 就是在当前这笔 output 里面的偏移值
         ///
         if !Sat(range.0).is_common() {
-          index.db.insert_sat_to_satpoint(&range.0, &SatPoint {
+          index.db.insert_sat_to_sat_point(&range.0, &SatPoint {
             outpoint,
             offset: output.value - remaining,
           });

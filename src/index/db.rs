@@ -111,6 +111,19 @@ impl DB {
     }).unwrap()
   }
 
+  pub fn get_outpoint_by_id(&self, id: u64) -> Option<MOutpoint> {
+    let mut conn = self.get_connection();
+
+    conn.exec_first("select id, txid, vout, value from outpoints where id = :id", params! {"id" => id}).map(|row| {
+      row.map(|(id, txid, vout, value)| MOutpoint {
+        id,
+        txid,
+        vout,
+        value,
+      })
+    }).unwrap()
+  }
+
   pub fn get_outpoint_value(&self, txid: String, vout: u32) -> Option<u64> {
     match self.get_outpoint(txid, vout) {
       None => {
@@ -238,14 +251,30 @@ impl DB {
 
     let mut conn = self.get_connection();
 
-    conn.exec_first("select id, outpoint_id, offset from sat_points where outpoint_id = :outpoint_id", params! {"outpoint_id" => outpoint_id}).map(|row| {
+    conn.exec_first("select id, outpoint_id, offset from sat_points where outpoint_id = :outpoint_id and offset = :offset", params! {"outpoint_id" => outpoint_id, "offset" => sat_point.offset}).map(|row| {
       row.map(|(id, outpoint_id, offset)| MSatPoint { id, outpoint_id, offset })
     }).unwrap()
   }
 
+  pub fn get_sat_point_by_outpoint(&self, outpoint: &OutPoint) -> Vec<MSatPoint> {
+    if let Some(outpoint) = self.get_outpoint(outpoint.txid.to_string(), outpoint.vout) {
+      let mut conn = self.get_connection();
+      let query_result = conn.exec_iter(
+        "select id, outpoint_id, offset from sat_points where outpoint_id = :outpoint_id",
+        params! {"outpoint_id" => 3780}
+      ).unwrap();
 
-  pub fn insert_sat_to_satpoint(&self, start: &u64, sat_point: &SatPoint) -> u64 {
-    log::trace!("insert_sat_to_satpoint");
+      query_result.map(|row| {
+        let (id, outpoint_id, offset) = from_row(row.unwrap());
+        MSatPoint{id, outpoint_id, offset}
+      }).collect()
+    } else {
+      vec![]
+    }
+  }
+
+  pub fn insert_sat_to_sat_point(&self, start: &u64, sat_point: &SatPoint) -> u64 {
+    log::trace!("insert_sat_to_sat_point");
     let mut conn = self.get_connection();
 
     let sat_id = match self.get_sat(start.clone()) {
@@ -316,6 +345,37 @@ impl DB {
     }).unwrap()
   }
 
+  pub fn get_inscription_by_sat_point(&self, sat_point: &MSatPoint) -> Option<MInscription> {
+    let mut conn = self.get_connection();
+    conn.exec_first("select id, inscription_id, offset, number, fee, height, sat_id, sat_point_id, timestamp from inscriptions where sat_point_id = :sat_point_id", params! {
+      "sat_point_id" => sat_point.id,
+    }).map(|row| {
+      row.map(|(id, inscription_id, offset, number, fee, height, sat_id, sat_point_id, timestamp)| MInscription {
+        id,
+        inscription_id,
+        offset,
+        number,
+        fee,
+        height,
+        sat_id,
+        sat_point_id,
+        timestamp,
+      })
+    }).unwrap()
+  }
+
+  pub fn get_inscription_next_number(&self) -> u64 {
+    let mut conn = self.get_connection();
+    match conn.query_first::<u64, &str>("select max(number) from inscriptions").unwrap() {
+      None => {
+        0
+      }
+      Some(number) => {
+        number + 1
+      }
+    }
+  }
+
   pub fn insert_inscription(&self, inscription_id: &InscriptionId, inscription_entry: &InscriptionEntry, sat_point: &SatPoint) -> u64 {
     log::trace!("insert_inscription");
     let sat_id = if let Some(sat) = inscription_entry.sat {
@@ -353,6 +413,35 @@ impl DB {
       "sat_point_id" => sat_point_id
     }).unwrap();
     conn.last_insert_id()
+  }
+
+  pub fn update_inscription_sat_point(&self, inscription_id: &InscriptionId, sat_point: Option<&SatPoint>) {
+    match self.get_inscription(inscription_id) {
+      None => {}
+      Some(inscription) => {
+        match sat_point {
+          None => {
+            let mut conn = self.get_connection();
+            conn.exec_drop("update inscriptions set sat_point_id = 0 where id = :id",
+                           params! {"id" => inscription.id}).unwrap();
+          },
+          Some(sat_point) => {
+            let sat_point_id = match self.get_sat_point(sat_point) {
+              None => {
+                self.insert_sat_point(sat_point)
+              }
+              Some(s_p) => {
+                s_p.id
+              }
+            };
+
+            let mut conn = self.get_connection();
+            conn.exec_drop("update inscriptions set sat_point_id = :sat_point_id where id = :id",
+                           params! {"id" => inscription.id, "sat_point_id" => sat_point_id}).unwrap();
+          }
+        }
+      }
+    }
   }
 
   pub fn truncate(&self, table_name: String) {
